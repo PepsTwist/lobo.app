@@ -50,6 +50,12 @@ educational_responses = {
 def send_whatsapp_message(phone, message ):
     """Envia mensagem via Z-API"""
     url = f"{ZAPI_BASE_URL}/{ZAPI_INSTANCE_ID}/token/{ZAPI_TOKEN}/send-text"
+
+      # ADICIONAR HEADERS COM CLIENT-TOKEN
+    headers = {
+        "Content-Type": "application/json",
+        "Client-Token": ZAPI_TOKEN  # ← ESTA É A CORREÇÃO!
+    }
     
     payload = {
         "phone": phone,
