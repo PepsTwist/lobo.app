@@ -2,17 +2,23 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import json
 import os
+import requests
 from datetime import datetime, timedelta
 import random
 
 app = Flask(__name__)
 CORS(app)
 
-# Base de dados em memória (simples e funcional)
+# Configurações Z-API
+ZAPI_INSTANCE_ID = "3E34371D3A3420D319F79EFBA4B7C50F"
+ZAPI_TOKEN = "6D9333950FDDCC8FB3D11ECA"
+ZAPI_BASE_URL = "https://api.z-api.io/instances"
+
+# Base de dados em memória
 students_db = {}
 conversations_db = []
 
-# Respostas educacionais pré-definidas
+# Respostas educacionais
 educational_responses = {
     'greeting': [
         "Hello! Welcome to your English learning journey! I'm excited to help you improve your skills. What's your name?",
@@ -40,6 +46,31 @@ educational_responses = {
         "Excellent! Your English is getting better. What else would you like to learn?"
     ]
 }
+
+def send_whatsapp_message(phone, message ):
+    """Envia mensagem via Z-API"""
+    url = f"{ZAPI_BASE_URL}/{ZAPI_INSTANCE_ID}/token/{ZAPI_TOKEN}/send-text"
+    
+    payload = {
+        "phone": phone,
+        "message": message
+    }
+    
+    try:
+        print(f"🚀 Enviando mensagem para {phone}: {message[:50]}...")
+        response = requests.post(url, json=payload)
+        
+        if response.status_code == 200:
+            print(f"✅ Mensagem enviada com sucesso!")
+            return True
+        else:
+            print(f"❌ Erro ao enviar: {response.status_code}")
+            print(f"Resposta: {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Erro na requisição: {e}")
+        return False
 
 def get_student_level(phone):
     if phone not in students_db:
@@ -71,13 +102,13 @@ def generate_response(message, phone):
     student = get_student_level(phone)
     
     # Detectar tipo de pergunta
-    if any(word in message_lower for word in ['hello', 'hi', 'hey', 'start']):
+    if any(word in message_lower for word in ['hello', 'hi', 'hey', 'start', 'oi', 'olá']):
         response_type = 'greeting'
-    elif any(word in message_lower for word in ['grammar', 'correct', 'mistake']):
+    elif any(word in message_lower for word in ['grammar', 'correct', 'mistake', 'gramática']):
         response_type = 'grammar'
-    elif any(word in message_lower for word in ['word', 'vocabulary', 'meaning']):
+    elif any(word in message_lower for word in ['word', 'vocabulary', 'meaning', 'vocabulário']):
         response_type = 'vocabulary'
-    elif any(word in message_lower for word in ['pronounce', 'speak', 'sound']):
+    elif any(word in message_lower for word in ['pronounce', 'speak', 'sound', 'pronúncia']):
         response_type = 'pronunciation'
     else:
         response_type = 'general'
@@ -88,10 +119,14 @@ def generate_response(message, phone):
     # Adicionar informações de progresso
     add_xp(phone, 10)
     
+    # Adicionar dica personalizada
+    tip = get_learning_tip(student['level'])
+    full_response = f"{response}\n\n{tip}\n\n📊 Level: {student['level']} | XP: {student['xp']}"
+    
     return {
-        'response': response,
+        'response': full_response,
         'student_info': student,
-        'tips': get_learning_tip(student['level'])
+        'tips': tip
     }
 
 def get_learning_tip(level):
@@ -106,11 +141,11 @@ def get_learning_tip(level):
 
 @app.route('/')
 def home():
-    return """
+    return f"""
     <h1>🎓 English Tutor Bot - FUNCIONANDO!</h1>
     <p><strong>Status:</strong> ✅ Online e Operacional</p>
-    <p><strong>Usuários ativos:</strong> {}</p>
-    <p><strong>Conversas processadas:</strong> {}</p>
+    <p><strong>Usuários ativos:</strong> {len(students_db)}</p>
+    <p><strong>Conversas processadas:</strong> {len(conversations_db)}</p>
     <h2>Endpoints Disponíveis:</h2>
     <ul>
         <li>🟢 GET /api/health - Health check</li>
@@ -118,7 +153,7 @@ def home():
         <li>🟢 GET /api/student/{{phone}}/progress - Ver progresso</li>
     </ul>
     <p><em>Bot desenvolvido com ❤️ para ensinar inglês!</em></p>
-    """.format(len(students_db), len(conversations_db))
+    """
 
 @app.route('/api/health')
 def health():
@@ -130,7 +165,8 @@ def health():
         "services": {
             "bot": "online",
             "database": "connected",
-            "ai": "functional"
+            "ai": "functional",
+            "zapi": "configured"
         }
     })
 
@@ -141,13 +177,20 @@ def receive_message():
         phone = data.get('phone', 'unknown')
         message_type = data.get('type', 'text')
         
+        print(f"📨 Mensagem recebida de {phone}")
+        
         if message_type == 'text':
             message = data.get('text', {}).get('message', '')
         else:
             message = f"Received {message_type} message"
         
+        print(f"💬 Conteúdo: {message}")
+        
         # Gerar resposta educacional
         bot_data = generate_response(message, phone)
+        
+        # ENVIAR RESPOSTA VIA WHATSAPP
+        success = send_whatsapp_message(phone, bot_data['response'])
         
         # Salvar conversa
         conversation = {
@@ -155,25 +198,44 @@ def receive_message():
             'user_message': message,
             'bot_response': bot_data['response'],
             'timestamp': datetime.now().isoformat(),
-            'message_type': message_type
+            'message_type': message_type,
+            'sent_successfully': success
         }
         conversations_db.append(conversation)
         
         return jsonify({
             "status": "success",
             "response_type": "educational_response",
-            "message": "Message processed successfully",
+            "message": "Message processed and sent successfully" if success else "Message processed but failed to send",
             "bot_response": bot_data['response'],
             "student_progress": bot_data['student_info'],
-            "learning_tip": bot_data['tips']
+            "sent_to_whatsapp": success
         })
         
     except Exception as e:
+        print(f"❌ Erro ao processar mensagem: {e}")
         return jsonify({
             "status": "error",
             "message": f"Error processing message: {str(e)}",
             "response_type": "error"
         }), 500
+
+@app.route('/api/webhook/test', methods=['GET', 'POST'])
+def test_webhook():
+    if request.method == 'GET':
+        return jsonify({
+            "status": "success",
+            "message": "Webhook test endpoint working perfectly!",
+            "timestamp": datetime.now().isoformat()
+        })
+    
+    # POST test
+    test_response = generate_response("Hello, this is a test!", "test_user")
+    return jsonify({
+        "status": "success",
+        "message": "Test completed successfully",
+        "test_response": test_response
+    })
 
 @app.route('/api/student/<phone>/progress')
 def get_progress(phone):
@@ -192,7 +254,7 @@ def get_progress(phone):
             "data": {
                 "student_info": student,
                 "total_conversations": len(user_conversations),
-                "recent_conversations": user_conversations[-5:],  # Últimas 5
+                "recent_conversations": user_conversations[-5:],
                 "achievements": get_achievements(student),
                 "next_level_info": get_next_level_info(student)
             }
@@ -227,25 +289,12 @@ def get_next_level_info(student):
     
     return "You're at the highest level! Keep practicing!"
 
-@app.route('/api/webhook/test', methods=['GET', 'POST'])
-def test_webhook():
-    if request.method == 'GET':
-        return jsonify({
-            "status": "success",
-            "message": "Webhook test endpoint working perfectly!",
-            "timestamp": datetime.now().isoformat()
-        })
-    
-    # POST test
-    test_response = generate_response("Hello, this is a test!", "test_user")
-    return jsonify({
-        "status": "success",
-        "message": "Test completed successfully",
-        "test_response": test_response
-    })
-
 if __name__ == '__main__':
     import os
     port = int(os.environ.get('PORT', 5000))
+    print("🚀 Starting English Tutor Bot...")
+    print("📚 Educational AI: Ready")
+    print("🎮 Gamification: Active")
+    print("💬 WhatsApp Integration: Ready")
+    print(f"📡 Z-API Instance: {ZAPI_INSTANCE_ID}")
     app.run(host='0.0.0.0', port=port, debug=False)
-
